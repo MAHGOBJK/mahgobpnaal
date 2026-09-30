@@ -13,24 +13,18 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    # 🟢 تثبيت جافا 17 المتوافقة تماماً مع خوادم البناء الحديثة لإنهاء خطأ الـ JVM
-    - name: set up JDK 17
+    # 🟢 الحل الفاصل: تثبيت جافا 11 القياسية المتوافقة 100% مع محرك جرايدل 7.4 القديم
+    - name: set up JDK 11
       uses: actions/setup-java@v4
       with:
-        java-version: '17'
+        java-version: '11'
         distribution: 'temurin'
-        cache: gradle
 
-    - name: Auto-generate missing Gradle Wrapper Jar
-      run: |
-        GRADLEW_PATH=$(find . -name "gradlew" -print -quit)
-        if [ ! -z "$GRADLEW_PATH" ]; then
-          MODULE_DIR=$(dirname "$GRADLEW_PATH")
-          cd "$MODULE_DIR"
-          gradle wrapper --gradle-version 7.4
-        else
-          gradle wrapper --gradle-version 7.4
-        fi
+    # 🟢 إجبار السيرفر على استخدام جرايدل 7.4 المتوافق مع سورس كلود
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v4
+      with:
+        gradle-version: '7.4'
 
     - name: Grant execute permission for gradlew
       run: |
