@@ -284,3 +284,6 @@ class OverlayService : Service() {
                     true
                 }
                 MotionEvent.ACTION_UP -> {
+                    if (isClick) {
+                        v.performClick()
+                    }
