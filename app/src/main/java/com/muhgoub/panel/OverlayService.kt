@@ -29,11 +29,18 @@ class OverlayService : Service() {
     companion object {
         const val CHANNEL_ID = "panel_overlay"
         const val NOTIF_ID = 1
+        
+        // 🟢 المقاسات المركزية للأيقونة العائمة لسهولة التحكم فيها
+        const val BUBBLE_SIZE_DP = 54
     }
 
     private lateinit var wm: WindowManager
-    private lateinit var params: WindowManager.LayoutParams
-    private var rootView: View? = null
+    private lateinit var menuParams: WindowManager.LayoutParams
+    private lateinit var bubbleParams: WindowManager.LayoutParams
+    
+    private var menuView: View? = null
+    private var bubbleView: View? = null
+    private var isMenuShowing = false
 
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == "hide_capture") applySecureFlag()
@@ -48,20 +55,28 @@ class OverlayService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (rootView == null) showOverlay()
+        if (bubbleView == null && menuView == null) {
+            initOverlayWindows()
+        }
         return START_STICKY
     }
 
     override fun onDestroy() {
         Prefs.sp(this).unregisterOnSharedPreferenceChangeListener(prefListener)
-        rootView?.let {
+        removeWindow(menuView)
+        removeWindow(bubbleView)
+        menuView = null
+        bubbleView = null
+        super.onDestroy()
+    }
+
+    private fun removeWindow(v: View?) {
+        v?.let {
             try {
                 wm.removeView(it)
             } catch (e: Exception) {
             }
         }
-        rootView = null
-        super.onDestroy()
     }
 
     // ---------- notification ----------
@@ -101,21 +116,37 @@ class OverlayService : Service() {
         TypedValue.COMPLEX_UNIT_MM, v, resources.displayMetrics
     ).toInt()
 
-    private fun showOverlay() {
+    private fun initOverlayWindows() {
         val themed = ContextThemeWrapper(this, R.style.Theme_Panel)
         val inflater = LayoutInflater.from(themed)
-        val view = inflater.inflate(R.layout.overlay_menu, null)
 
-        val w = mm(50f) // 5 cm
-        val h = mm(70f) // 7 cm
-        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        // 1. إعداد نوع النافذة المتوافق مع إصدار الأندرويد القديم المستقر
+        val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         } else {
             @Suppress("DEPRECATION")
             WindowManager.LayoutParams.TYPE_PHONE
         }
-        params = WindowManager.LayoutParams(
-            w, h, type,
+
+        // 🟢 2. بناء وتجهيز الأيقونة العائمة الشفافة (Bubble View)
+        bubbleView = inflater.inflate(R.layout.overlay_bubble, null) // تم الربط مع ملف overlay_bubble النظيف
+        val bSize = dp(BUBBLE_SIZE_DP)
+        bubbleParams = WindowManager.LayoutParams(
+            bSize, bSize, windowType,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = 10
+            y = dp(200)
+        }
+
+        // 🟢 3. بناء وتجهيز اللوحة الكبيرة (Menu View)
+        menuView = inflater.inflate(R.layout.overlay_menu, null)
+        val w = mm(50f) // 5 cm
+        val h = mm(70f) // 7 cm
+        menuParams = WindowManager.LayoutParams(
+            w, h, windowType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
@@ -124,14 +155,23 @@ class OverlayService : Service() {
             y = dp(120)
         }
 
-        if (Prefs.getBool(this, "hide_capture")) {
-            params.flags = params.flags or WindowManager.LayoutParams.FLAG_SECURE
+        // تفعيل الحماية ضد لقطات الشاشة إذا كانت مفعلة
+        applySecureFlagInternal()
+
+        // 🟢 ضبط نقرات الأيقونة العائمة لفتح اللوحة الكبيرة
+        bubbleView?.setOnClickListener {
+            showMenuLayout()
         }
+        setupBubbleDrag(bubbleView!!)
 
-        view.findViewById<View>(R.id.btn_close).setOnClickListener { stopSelf() }
-        setupDrag(view.findViewById(R.id.header))
+        // ضبط زر الإغلاق جوه اللوحة الكبيرة لإخفائها وإرجاع الأيقونة الشفافة
+        menuView?.findViewById<View>(R.id.btn_close)?.setOnClickListener { 
+            hideMenuLayout()
+        }
+        setupMenuDrag(menuView!!.findViewById(R.id.header))
 
-        val content = view.findViewById<LinearLayout>(R.id.content)
+        // بناء المحتوى الداخلي والأزرار التابعة للمشروع الأصلي
+        val content = menuView!!.findViewById<LinearLayout>(R.id.content)
         buildChecks(themed, inflater, content)
         addSpace(themed, content, 14)
         buildGroup(themed, content, "grp1", listOf("محجوب", "تامر", "Off"))
@@ -139,39 +179,85 @@ class OverlayService : Service() {
         buildGroup(themed, content, "grp2", listOf("احمد", "كريم", "عمو", "Off"))
         addSpace(themed, content, 10)
 
-        wm.addView(view, params)
-        rootView = view
+        // تشغيل الأيقونة العائمة الشفافة كديفولت أول ما البرنامج يفتح
+        wm.addView(bubbleView, bubbleParams)
+        isMenuShowing = false
         Prefs.sp(this).registerOnSharedPreferenceChangeListener(prefListener)
     }
 
-    private fun applySecureFlag() {
-        val hide = Prefs.getBool(this, "hide_capture")
-        params.flags = if (hide) {
-            params.flags or WindowManager.LayoutParams.FLAG_SECURE
-        } else {
-            params.flags and WindowManager.LayoutParams.FLAG_SECURE.inv()
+    private fun showMenuLayout() {
+        if (!isMenuShowing && menuView != null) {
+            if (bubbleView?.windowToken != null) {
+                wm.removeView(bubbleView)
+            }
+            wm.addView(menuView, menuParams)
+            isMenuShowing = true
         }
-        rootView?.let { wm.updateViewLayout(it, params) }
     }
 
-    private fun setupDrag(header: View) {
+    private fun hideMenuLayout() {
+        if (isMenuShowing && menuView != null) {
+            if (menuView?.windowToken != null) {
+                wm.removeView(menuView)
+            }
+            wm.addView(bubbleView, bubbleParams)
+            isMenuShowing = false
+        }
+    }
+
+    private fun applySecureFlag() {
+        applySecureFlagInternal()
+        if (isMenuShowing) {
+            menuView?.let { wm.updateViewLayout(it, menuParams) }
+        } else {
+            bubbleView?.let { wm.updateViewLayout(it, bubbleParams) }
+        }
+    }
+
+    private fun applySecureFlagInternal() {
+        val hide = Prefs.getBool(this, "hide_capture")
+        if (hide) {
+            menuParams.flags = menuParams.flags or WindowManager.LayoutParams.FLAG_SECURE
+            bubbleParams.flags = bubbleParams.flags or WindowManager.LayoutParams.FLAG_SECURE
+        } else {
+            menuParams.flags = menuParams.flags and WindowManager.LayoutParams.FLAG_SECURE.inv()
+            bubbleParams.flags = bubbleParams.flags and WindowManager.LayoutParams.FLAG_SECURE.inv()
+        }
+    }
+
+    // 🟢 ميزة السحب والتحريك الفولاذية للأيقونة العائمة الشفافة
+    private fun setupBubbleDrag(view: View) {
         var startX = 0
         var startY = 0
         var touchX = 0f
         var touchY = 0f
-        header.setOnTouchListener { _, e ->
+        var isClick = false
+        
+        view.setOnTouchListener { v, e ->
             when (e.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    startX = params.x
-                    startY = params.y
+                    startX = bubbleParams.x
+                    startY = bubbleParams.y
                     touchX = e.rawX
                     touchY = e.rawY
+                    isClick = true
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    params.x = startX + (e.rawX - touchX).toInt()
-                    params.y = startY + (e.rawY - touchY).toInt()
-                    rootView?.let { wm.updateViewLayout(it, params) }
+                    val dx = (e.rawX - touchX).toInt()
+                    val dy = (e.rawY - touchY).toInt()
+                    if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+                        isClick = false
+                    }
+                    bubbleParams.x = startX + dx
+                    bubbleParams.y = startY + dy
+                    wm.updateViewLayout(view, bubbleParams)
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (isClick) {
+                        v.performClick()
+                    }
                     true
                 }
                 else -> false
@@ -179,111 +265,23 @@ class OverlayService : Service() {
         }
     }
 
-    // ---------- content ----------
-
-    private val checkLabels = listOf(
-        "حبل 1", "حبل٢",
-        "كين٣", "عمو٤",
-        "جين٥", "كين٦",
-        "تفعيل رقم ٧", "تفعيل رقم ٨",
-        "تفعيل رقم ٩", "تفعيل رقم ١٠",
-        "تفعيل رقم ١١", "تفعيل رقم ١٢"
-    )
-
-    private fun buildChecks(ctx: Context, inflater: LayoutInflater, container: LinearLayout) {
-        for (r in 0 until 6) {
-            val row = LinearLayout(ctx).apply {
-                orientation = LinearLayout.HORIZONTAL
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-                )
-            }
-            for (c in 0..1) {
-                val idx = r * 2 + c
-                val item = inflater.inflate(R.layout.item_check, row, false)
-                item.layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f).apply {
-                    setMargins(dp(4), dp(4), dp(4), dp(4))
+    private fun setupMenuDrag(header: View) {
+        var startX = 0
+        var startY = 0
+        var touchX = 0f
+        var touchY = 0f
+        header.setOnTouchListener { _, e ->
+            when (e.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    startX = menuParams.x
+                    startY = menuParams.y
+                    touchX = e.rawX
+                    touchY = e.rawY
+                    true
                 }
-                bindCheck(item, checkLabels[idx], "chk_$idx")
-                row.addView(item)
-            }
-            container.addView(row)
-        }
-    }
-
-    private fun bindCheck(item: View, label: String, key: String) {
-        val text = item.findViewById<TextView>(R.id.item_text)
-        val box = item.findViewById<CheckBox>(R.id.item_box)
-        text.text = label
-
-        fun render() {
-            val on = Prefs.getBool(this, key)
-            box.isChecked = on
-            item.setBackgroundResource(if (on) R.drawable.bg_item_on else R.drawable.bg_item)
-        }
-        render()
-        item.setOnClickListener {
-            val newState = !Prefs.getBool(this, key)
-            Prefs.setBool(this, key, newState)
-            render()
-            toast(newState)
-        }
-    }
-
-    private fun buildGroup(ctx: Context, container: LinearLayout, key: String, labels: List<String>) {
-        val offIndex = labels.lastIndex
-        val row = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        }
-        val pills = labels.mapIndexed { i, label ->
-            TextView(ctx).apply {
-                text = label
-                gravity = Gravity.CENTER
-                textSize = 16f
-                maxLines = 1
-                isClickable = true
-                isFocusable = true
-                layoutParams = LinearLayout.LayoutParams(0, dp(52), 1f).apply {
-                    setMargins(dp(4), dp(4), dp(4), dp(4))
+                MotionEvent.ACTION_MOVE -> {
+                    menuParams.x = startX + (e.rawX - touchX).toInt()
+                    menuParams.y = startY + (e.rawY - touchY).toInt()
+                    menuView?.let { wm.updateViewLayout(it, menuParams) }
+                    true
                 }
-            }
-        }
-
-        fun render() {
-            val sel = Prefs.getInt(this, key, offIndex)
-            pills.forEachIndexed { i, pill ->
-                val active = i == sel && i != offIndex
-                pill.setBackgroundResource(if (active) R.drawable.bg_pill_on else R.drawable.bg_pill)
-                pill.setTextColor(if (i == offIndex && !active) 0xFFBDBDBD.toInt() else 0xFFFFFFFF.toInt())
-            }
-        }
-
-        pills.forEachIndexed { i, pill ->
-            pill.setOnClickListener {
-                val old = Prefs.getInt(this, key, offIndex)
-                val newSel = if (i == old) offIndex else i
-                Prefs.setInt(this, key, newSel)
-                render()
-                toast(newSel != offIndex)
-            }
-            row.addView(pill)
-        }
-        render()
-        container.addView(row)
-    }
-
-    private fun addSpace(ctx: Context, container: LinearLayout, heightDp: Int) {
-        container.addView(View(ctx), LinearLayout.LayoutParams(1, dp(heightDp)))
-    }
-
-    private fun toast(on: Boolean) {
-        Toast.makeText(
-            this,
-            getString(if (on) R.string.toast_on else R.string.toast_off),
-            Toast.LENGTH_SHORT
-        ).show()
-    }
-}
