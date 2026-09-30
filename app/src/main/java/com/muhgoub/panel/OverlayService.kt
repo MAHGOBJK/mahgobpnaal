@@ -109,7 +109,6 @@ class OverlayService : Service() {
         TypedValue.COMPLEX_UNIT_MM, v, resources.displayMetrics
     ).toInt()
 
-    // 🟢 تعريف دوال المساحات والمجموعات في رتبة علوية لكي يراها المترجم فوراً بدون تعليق
     fun addSpace(ctx: Context, container: LinearLayout, heightDp: Int) {
         val view = View(ctx).apply {
             layoutParams = LinearLayout.LayoutParams(
