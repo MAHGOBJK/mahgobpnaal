@@ -13,38 +13,29 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    # 🟢 الحل الفاصل: تثبيت جافا 11 القياسية المتوافقة 100% مع محرك جرايدل 7.4 القديم
+    # 🟢 تثبيت جافا 11 المتوافقة مع المحرك القديم بسلام
     - name: set up JDK 11
       uses: actions/setup-java@v4
       with:
         java-version: '11'
         distribution: 'temurin'
 
-    # 🟢 إجبار السيرفر على استخدام جرايدل 7.4 المتوافق مع سورس كلود
+    # 🟢 تثبيت محرك جرايدل 7.4 الرسمي المتوافق مع أكواد كلود
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v4
       with:
         gradle-version: '7.4'
 
-    - name: Grant execute permission for gradlew
+    # 🟢 إجبار توليد ملف الـ gradlew الناقص داخلياً ومنحه الصلاحيات تلقائياً لمنع خطأ الـ exit code 1
+    - name: Auto-generate Gradle Wrapper Binary
       run: |
-        GRADLEW_PATH=$(find . -name "gradlew" -print -quit)
-        if [ ! -z "$GRADLEW_PATH" ]; then
-          chmod +x "$GRADLEW_PATH"
-        else
-          exit 1
-        fi
+        gradle wrapper --gradle-version 7.4
+        chmod +x gradlew
 
+    # 🟢 بناء وتجميع الـ APK النظيف
     - name: Build with Gradle
       run: |
-        GRADLEW_PATH=$(find . -name "gradlew" -print -quit)
-        if [ ! -z "$GRADLEW_PATH" ]; then
-          MODULE_DIR=$(dirname "$GRADLEW_PATH")
-          cd "$MODULE_DIR"
-          ./gradlew assembleDebug
-        else
-          exit 1
-        fi
+        ./gradlew assembleDebug
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
